@@ -1,8 +1,9 @@
-package PastaJuizoFinal;
+package ProjetoJuizoFinal;
 import robocode.AdvancedRobot;
 import robocode.*;
 import robocode.util.Utils;
 import java.awt.Color;
+import java.awt.geom.Point2D;
 import java.util.HashMap;
 import java.util.Map;
 // API help : https://robocode.sourceforge.io/docs/robocode/robocode/Robot.html
@@ -48,9 +49,48 @@ public class JuizoFinal extends AdvancedRobot
 	 }
 	 
 	public void mirarEAtirar() {
-        if (alvo == null) return;
-        Inimigo i = inimigos.get(alvo);
-        if (i == null || !recente(i)) return;
+    if (alvo == null) return;
+    Inimigo i = inimigos.get(alvo);
+    if (i == null || !recente(i)) return;
+
+    // onde o inimigo está AGORA (andou desde o último scan)
+    long atraso = getTime() - i.visto;
+    double px = limitar(i.x + Math.sin(i.rumo) * i.velocidade * atraso, getBattleFieldWidth());
+    double py = limitar(i.y + Math.cos(i.rumo) * i.velocidade * atraso, getBattleFieldHeight());
+
+    // potência conforme a distância
+    double distancia = Point2D.distance(getX(), getY(), px, py);
+    double potencia;
+    if      (distancia < 150) potencia = 3.0;
+    else if (distancia < 400) potencia = 2.0;
+    else                      potencia = 1.2;
+    potencia = Math.min(potencia, getEnergy() - 0.1);
+    if (potencia < 0.1) return;
+
+    double velocidadeBala = 20 - 3 * potencia;
+
+    // simula o inimigo andando até a bala chegar (mira linear)
+    for (int t = 1; t < 200; t++) {
+        if (t * velocidadeBala >= Point2D.distance(getX(), getY(), px, py)) break;
+        px = limitar(px + Math.sin(i.rumo) * i.velocidade, getBattleFieldWidth());
+        py = limitar(py + Math.cos(i.rumo) * i.velocidade, getBattleFieldHeight());
+    }
+
+    // gira o canhão até o ponto previsto
+    double anguloTiro = Math.atan2(px - getX(), py - getY());
+    setTurnGunRightRadians(Utils.normalRelativeAngle(anguloTiro - getGunHeadingRadians()));
+
+    // atira quando o canhão está frio, alinhado e com dados recentes
+    double tolerancia = Math.atan(18 / Math.max(distancia, 1));
+    if (getGunHeat() == 0 && atraso <= 10
+            && Math.abs(getGunTurnRemainingRadians()) < tolerancia) {
+        setFire(potencia);
+    }
+}
+
+// mantém a posição prevista dentro da arena
+double limitar(double v, double max) {
+    return Math.max(18, Math.min(max - 18, v));
 }
 
     /**
@@ -75,10 +115,7 @@ public class JuizoFinal extends AdvancedRobot
         // reavalia quem é o alvo com os dados mais recentes
         escolherAlvo();
 
-        // só atira se o robô escaneado for o alvo escolhido
-        if (e.getName().equals(alvo)) {
-            fire(1);
-        }
+       
     }
     static class Inimigo {
     String nome;
