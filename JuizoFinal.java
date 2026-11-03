@@ -25,25 +25,30 @@ public class JuizoFinal extends AdvancedRobot
     setBodyColor(new Color(240, 208, 221));
     setRadarColor(new Color(240, 208, 221));
 	
-               // corpo, canhão e radar giram de forma independente
+        // corpo, canhão e radar giram de forma independente
         setAdjustGunForRobotTurn(true);
         setAdjustRadarForGunTurn(true);
         setAdjustRadarForRobotTurn(true);
  
         while(true) {
-            // radar acompanha o alvo (e varre a arena de tempos em tempos)
-            controlarRadar();
- 
-            // mesmo movimento de antes (frente 100 / trás 100), mas sem travar o loop
-            if (getDistanceRemaining() == 0) {
+            setTurnRadarRightRadians(Double.POSITIVE_INFINITY);
+
+            // olha 80 px à frente no sentido em que está andando;
+            // se for bater na parede, vai pro meio
+            double olhar = 80 * Math.signum(getDistanceRemaining());
+            if (olhar != 0 && getTurnRemaining() == 0 && pertoDaParede(olhar)) {
+                fugirProMeio(150);
+            }
+            // movimento de vai e vem
+            else if (getDistanceRemaining() == 0) {
                 setAhead(100 * sentido);
                 sentido = -sentido;
             }
- 
+            
             // a cada tick, o canhão acompanha o alvo
             mirarEAtirar();
             execute();
-     	}
+        }
 	 }
 
 
@@ -214,6 +219,18 @@ public void controlarRadar() {
         back(10);
     }
 
+    // distância mínima que o robô tenta manter das paredes
+    static final double MARGEM = 60;
+
+    // checa se está muito perto da parede
+    // (dist negativo = olha para trás)
+    boolean pertoDaParede(double dist) {
+        double x = getX() + Math.sin(getHeadingRadians()) * dist;
+        double y = getY() + Math.cos(getHeadingRadians()) * dist;
+        return x < MARGEM || y < MARGEM
+            || x > getBattleFieldWidth() - MARGEM
+            || y > getBattleFieldHeight() - MARGEM;
+    }
 
     // vira pro meio da arena e anda até lá
     // se for mais rápido, vai de ré
