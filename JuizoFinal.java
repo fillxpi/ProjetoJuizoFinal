@@ -31,8 +31,8 @@ public class JuizoFinal extends AdvancedRobot
         setAdjustRadarForRobotTurn(true);
  
         while(true) {
-            // radar varre a arena sem parar (o canhão não precisa mais girar 360)
-            setTurnRadarRightRadians(Double.POSITIVE_INFINITY);
+            // radar acompanha o alvo (e varre a arena de tempos em tempos)
+            controlarRadar();
  
             // mesmo movimento de antes (frente 100 / trás 100), mas sem travar o loop
             if (getDistanceRemaining() == 0) {
@@ -53,10 +53,14 @@ public class JuizoFinal extends AdvancedRobot
     Inimigo i = inimigos.get(alvo);
     if (i == null || !recente(i)) return;
 
-    // onde o inimigo está AGORA (andou desde o último scan)
+    // onde o inimigo está AGORA (andou, e talvez girou, desde o último scan)
     long atraso = getTime() - i.visto;
-    double px = limitar(i.x + Math.sin(i.rumo) * i.velocidade * atraso, getBattleFieldWidth());
-    double py = limitar(i.y + Math.cos(i.rumo) * i.velocidade * atraso, getBattleFieldHeight());
+    double px = i.x, py = i.y, rumo = i.rumo;
+    for (long k = 0; k < atraso; k++) {
+        rumo += i.taxaGiro;
+        px = limitar(px + Math.sin(rumo) * i.velocidade, getBattleFieldWidth());
+        py = limitar(py + Math.cos(rumo) * i.velocidade, getBattleFieldHeight());
+    }
 
     // potência conforme a distância
     double distancia = Point2D.distance(getX(), getY(), px, py);
@@ -64,25 +68,33 @@ public class JuizoFinal extends AdvancedRobot
     if      (distancia < 150) potencia = 3.0;
     else if (distancia < 400) potencia = 2.0;
     else                      potencia = 1.2;
+    // não gasta mais energia do que o necessário para matar o alvo
+    // (dano = 4 x potência, mais 2 x (potência - 1) quando a potência passa de 1)
+    double necessaria = (i.energia <= 4) ? i.energia / 4 : (i.energia + 2) / 6;
+    potencia = Math.min(potencia, Math.max(necessaria, 0.1));
+    // com pouca energia, só tiros fracos
+    if (getEnergy() < 20) potencia = Math.min(potencia, 1.0);
+    // nunca gasta a energia toda
     potencia = Math.min(potencia, getEnergy() - 0.1);
     if (potencia < 0.1) return;
 
     double velocidadeBala = 20 - 3 * potencia;
 
-    // simula o inimigo andando até a bala chegar (mira linear)
+    // simula o inimigo andando (e girando) até a bala chegar (mira circular)
     for (int t = 1; t < 200; t++) {
         if (t * velocidadeBala >= Point2D.distance(getX(), getY(), px, py)) break;
-        px = limitar(px + Math.sin(i.rumo) * i.velocidade, getBattleFieldWidth());
-        py = limitar(py + Math.cos(i.rumo) * i.velocidade, getBattleFieldHeight());
+        rumo += i.taxaGiro;
+        px = limitar(px + Math.sin(rumo) * i.velocidade, getBattleFieldWidth());
+        py = limitar(py + Math.cos(rumo) * i.velocidade, getBattleFieldHeight());
     }
 
     // gira o canhão até o ponto previsto
     double anguloTiro = Math.atan2(px - getX(), py - getY());
     setTurnGunRightRadians(Utils.normalRelativeAngle(anguloTiro - getGunHeadingRadians()));
 
-    // atira quando o canhão está frio, alinhado e com dados recentes
+    // atira quando o canhão está frio, alinhado, com dados recentes e o alvo não está longe demais
     double tolerancia = Math.atan(18 / Math.max(distancia, 1));
-    if (getGunHeat() == 0 && atraso <= 10
+    if (getGunHeat() == 0 && atraso <= 10 && distancia < 700
             && Math.abs(getGunTurnRemainingRadians()) < tolerancia) {
         setFire(potencia);
     }
@@ -93,16 +105,49 @@ double limitar(double v, double max) {
     return Math.max(18, Math.min(max - 18, v));
 }
 
-    
+// radar: segue o alvo e, de tempos em tempos, varre a arena inteira
+public void controlarRadar() {
+    Inimigo a = (alvo == null) ? null : inimigos.get(alvo);
+
+    // com mais de 1 inimigo, a cada 24 ticks gira por 9 ticks para ver todos
+    boolean varreduraCompleta = (getOthers() > 1) && (getTime() % 24 < 9);
+    // com mais de 3 inimigos vivos, o radar só gira (vê todo mundo a cada 8 ticks)
+    boolean muitosInimigos = getOthers() > 3;
+
+    // sem alvo, alvo sem aparecer há muito tempo, hora da varredura ou muitos inimigos: gira sem parar
+    if (a == null || getTime() - a.visto > 12 || varreduraCompleta || muitosInimigos) {
+        setTurnRadarRightRadians(Double.POSITIVE_INFINITY);
+        return;
+    }
+
+    // senão: aponta o radar para o alvo, passando um pouco dele para não perdê-lo
+    double anguloAlvo = Math.atan2(a.x - getX(), a.y - getY());
+    double giro = Utils.normalRelativeAngle(anguloAlvo - getRadarHeadingRadians());
+    setTurnRadarRightRadians(giro + (giro >= 0 ? 0.35 : -0.35));
+}
+
+    /**
+     * onScannedRobot: What to do when you see another robot
+     */
     public void onScannedRobot(ScannedRobotEvent e) {
         // guarda/atualiza os dados desse inimigo
         Inimigo i = inimigos.get(e.getName());
         if (i == null) {
             i = new Inimigo();
             i.nome = e.getName();
+            i.rumo = e.getHeadingRadians();
+            i.visto = getTime();
             inimigos.put(e.getName(), i);
         }
         double anguloAbsoluto = getHeadingRadians() + e.getBearingRadians();
+        // quanto o inimigo girou por tick desde o último scan (para a mira circular)
+        long dt = getTime() - i.visto;
+        if (dt > 0 && dt <= 8) {
+            double giro = Utils.normalRelativeAngle(e.getHeadingRadians() - i.rumo) / dt;
+            i.taxaGiro = Math.max(-0.18, Math.min(0.18, giro)); // limite do jogo: ~10 graus por tick
+        } else if (dt > 8) {
+            i.taxaGiro = 0;
+        }
         i.x = getX() + Math.sin(anguloAbsoluto) * e.getDistance();
         i.y = getY() + Math.cos(anguloAbsoluto) * e.getDistance();
         i.energia = e.getEnergy();
@@ -118,24 +163,40 @@ double limitar(double v, double max) {
     static class Inimigo {
     String nome;
     double x, y, energia, velocidade,rumo;
+    double taxaGiro; // quanto o rumo do inimigo muda por tick (radianos)
     long visto; // ultima vez q foi escaneado
     }
     // considera "recente" o inimigo visto nos últimos 40 ticks
     boolean recente(Inimigo i) {
         return getTime() - i.visto <= 40;
     }
-    // escolhe como alvo o inimigo com MENOS energia (vida)
+    // pontuação do inimigo: quanto MENOR, melhor alvo (pouca energia e perto)
+    double pontuacao(Inimigo i) {
+        double distancia = Point2D.distance(getX(), getY(), i.x, i.y);
+        return i.energia + distancia * 0.1; // 100 px de distância "valem" 10 de energia
+    }
+    // escolhe como alvo o inimigo com a menor pontuação (energia + distância)
     public void escolherAlvo () {
         Inimigo melhor = null;
         double menor = Double.MAX_VALUE;
         for (Inimigo i : inimigos.values()) {
             if (!recente(i)) continue;
-            if (i.energia < menor) {
-                menor = i.energia;
+            double p = pontuacao(i);
+            if (p < menor) {
+                menor = p;
                 melhor = i;
             }
         }
-        alvo = (melhor == null) ? null : melhor.nome;
+        if (melhor == null) {
+            alvo = null;
+            return;
+        }
+        // só troca de alvo se o novo for bem melhor que o atual (evita ficar trocando)
+        Inimigo atual = (alvo == null) ? null : inimigos.get(alvo);
+        if (atual != null && recente(atual) && pontuacao(atual) - menor < 15) {
+            return;
+        }
+        alvo = melhor.nome;
     }
     /**
      * onRobotDeath: remove o inimigo morto da lista
