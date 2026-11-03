@@ -94,8 +94,6 @@ double limitar(double v, double max) {
     return Math.max(18, Math.min(max - 18, v));
 }
 
-<<<<<<< HEAD
-=======
 // radar: segue o alvo e, de tempos em tempos, varre a arena inteira
 public void controlarRadar() {
     Inimigo a = (alvo == null) ? null : inimigos.get(alvo);
@@ -116,8 +114,6 @@ public void controlarRadar() {
     double giro = Utils.normalRelativeAngle(anguloAlvo - getRadarHeadingRadians());
     setTurnRadarRightRadians(giro + (giro >= 0 ? 0.35 : -0.35));
 }
-
->>>>>>> mira-do-robo
     /**
      * onScannedRobot: What to do when you see another robot
      */
