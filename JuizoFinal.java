@@ -6,10 +6,8 @@ import java.awt.Color;
 import java.awt.geom.Point2D;
 import java.util.HashMap;
 import java.util.Map;
-// API help : https://robocode.sourceforge.io/docs/robocode/robocode/Robot.html
-/**
- * JuizoFinal - a robot by (your name here)
- */
+
+
 public class JuizoFinal extends AdvancedRobot
 {
     // guarda os dados de cada inimigo já escaneado (chave = nome do inimigo)
@@ -27,27 +25,34 @@ public class JuizoFinal extends AdvancedRobot
     setBodyColor(new Color(240, 208, 221));
     setRadarColor(new Color(240, 208, 221));
 	
-               // corpo, canhão e radar giram de forma independente
+        // corpo, canhão e radar giram de forma independente
         setAdjustGunForRobotTurn(true);
         setAdjustRadarForGunTurn(true);
         setAdjustRadarForRobotTurn(true);
  
         while(true) {
-            // radar acompanha o alvo (e varre a arena de tempos em tempos)
-            controlarRadar();
- 
-            // mesmo movimento de antes (frente 100 / trás 100), mas sem travar o loop
-            if (getDistanceRemaining() == 0) {
+            setTurnRadarRightRadians(Double.POSITIVE_INFINITY);
+
+            // olha 80 px à frente no sentido em que está andando;
+            // se for bater na parede, vai pro meio
+            double olhar = 80 * Math.signum(getDistanceRemaining());
+            if (olhar != 0 && getTurnRemaining() == 0 && pertoDaParede(olhar)) {
+                fugirProMeio(150);
+            }
+            // movimento de vai e vem
+            else if (getDistanceRemaining() == 0) {
                 setAhead(100 * sentido);
                 sentido = -sentido;
             }
- 
+            
             // a cada tick, o canhão acompanha o alvo
             mirarEAtirar();
             execute();
-     	}
+        }
 	 }
-	 
+
+
+
 	public void mirarEAtirar() {
     if (alvo == null) return;
     Inimigo i = inimigos.get(alvo);
@@ -207,18 +212,41 @@ public void controlarRadar() {
             alvo = null;
         }
     }
-    /**
-     * onHitByBullet: What to do when you're hit by a bullet
-     */
+    
+    
     public void onHitByBullet(HitByBulletEvent e) {
         // Replace the next line with any behavior you would like
         back(10);
     }
-    /**
-     * onHitWall: What to do when you hit a wall
-     */
+
+    // distância mínima que o robô tenta manter das paredes
+    static final double MARGEM = 60;
+
+    // checa se está muito perto da parede
+    // (dist negativo = olha para trás)
+    boolean pertoDaParede(double dist) {
+        double x = getX() + Math.sin(getHeadingRadians()) * dist;
+        double y = getY() + Math.cos(getHeadingRadians()) * dist;
+        return x < MARGEM || y < MARGEM
+            || x > getBattleFieldWidth() - MARGEM
+            || y > getBattleFieldHeight() - MARGEM;
+    }
+
+    // vira pro meio da arena e anda até lá
+    // se for mais rápido, vai de ré
+    public void fugirProMeio(double dist) {
+        double anguloCentro = Math.atan2(getBattleFieldWidth() / 2 - getX(), getBattleFieldHeight() / 2 - getY());
+        double giro = Utils.normalRelativeAngle(anguloCentro - getHeadingRadians());
+        if (Math.abs(giro) > Math.PI / 2) {
+            giro = Utils.normalRelativeAngle(giro + Math.PI);
+            dist = -dist;
+        }
+        setTurnRightRadians(giro);
+        setAhead(dist);
+    }
+    
+    // quando bater na parede, chama o método fugirProMeio
     public void onHitWall(HitWallEvent e) {
-        // Replace the next line with any behavior you would like
-        back(20);
+    fugirProMeio(150);
     }    
 }
