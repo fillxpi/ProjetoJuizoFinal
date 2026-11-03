@@ -6,10 +6,8 @@ import java.awt.Color;
 import java.awt.geom.Point2D;
 import java.util.HashMap;
 import java.util.Map;
-// API help : https://robocode.sourceforge.io/docs/robocode/robocode/Robot.html
-/**
- * JuizoFinal - a robot by (your name here)
- */
+
+
 public class JuizoFinal extends AdvancedRobot
 {
     // guarda os dados de cada inimigo já escaneado (chave = nome do inimigo)
@@ -47,7 +45,9 @@ public class JuizoFinal extends AdvancedRobot
             execute();
      	}
 	 }
-	 
+
+
+
 	public void mirarEAtirar() {
     if (alvo == null) return;
     Inimigo i = inimigos.get(alvo);
@@ -93,9 +93,7 @@ double limitar(double v, double max) {
     return Math.max(18, Math.min(max - 18, v));
 }
 
-    /**
-     * onScannedRobot: What to do when you see another robot
-     */
+    
     public void onScannedRobot(ScannedRobotEvent e) {
         // guarda/atualiza os dados desse inimigo
         Inimigo i = inimigos.get(e.getName());
@@ -148,18 +146,29 @@ double limitar(double v, double max) {
             alvo = null;
         }
     }
-    /**
-     * onHitByBullet: What to do when you're hit by a bullet
-     */
+    
+    
     public void onHitByBullet(HitByBulletEvent e) {
         // Replace the next line with any behavior you would like
         back(10);
     }
-    /**
-     * onHitWall: What to do when you hit a wall
-     */
+
+
+    // vira pro meio da arena e anda até lá
+    // se for mais rápido, vai de ré
+    public void fugirProMeio(double dist) {
+        double anguloCentro = Math.atan2(getBattleFieldWidth() / 2 - getX(), getBattleFieldHeight() / 2 - getY());
+        double giro = Utils.normalRelativeAngle(anguloCentro - getHeadingRadians());
+        if (Math.abs(giro) > Math.PI / 2) {
+            giro = Utils.normalRelativeAngle(giro + Math.PI);
+            dist = -dist;
+        }
+        setTurnRightRadians(giro);
+        setAhead(dist);
+    }
+    
+    // quando bater na parede, chama o método fugirProMeio
     public void onHitWall(HitWallEvent e) {
-        // Replace the next line with any behavior you would like
-        back(20);
+    fugirProMeio(150);
     }    
 }
