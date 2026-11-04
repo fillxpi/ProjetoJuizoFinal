@@ -16,6 +16,17 @@ public class JuizoFinal extends AdvancedRobot
     String alvo = null;
 	int sentido = 1;
 
+    // canto escolhido para o começo da partida
+    Point2D.Double canto = null;
+    // se tem mais inimigos q isso vivos, robô fica no cantinho
+    static final int LIMITE_MELEE = 2;
+    // distância do ponto do canto até as paredes
+    static final double RECUO_CANTO = 170;
+    // distância ideal do inimigo mais próximo (no 1x1 ele fica perto, no melee ele fica longe)
+    static final double DIST_PERTO = 180;
+    static final double DIST_LONGE = 400;
+
+    
     // *** run *** //
     public void run() {
     // aqui to só definindo as cores do robô
@@ -29,7 +40,7 @@ public class JuizoFinal extends AdvancedRobot
         setAdjustRadarForRobotTurn(true);
  
         while(true) {
-            setTurnRadarRightRadians(Double.POSITIVE_INFINITY);
+            controlarRadar();
 
             // olha 80 px à frente no sentido que tá andando;
             // se for bater na parede, vai pro meio
@@ -39,8 +50,7 @@ public class JuizoFinal extends AdvancedRobot
             }
             // movimento de vai e vem
             else if (getDistanceRemaining() == 0) {
-                setAhead(100 * sentido);
-                sentido = -sentido;
+                vaiPraOnde();
             }
             
             // a cada tick, o canhão acompanha o alvo
@@ -217,15 +227,7 @@ public class JuizoFinal extends AdvancedRobot
 
     // *** onHitByBullet *** //
     public void onHitByBullet(HitByBulletEvent e) {
-        // fica de lado em relação a quem atirou
-        // atan(tan) limita o giro a 90°
-        double giro = Math.atan(Math.tan(e.getBearingRadians() + Math.PI / 2));
-        setTurnRightRadians(giro);
-
-        // anda de lado usando o mesmo 'sentido' do vai-e-vem do run()
-        setAhead(150 * sentido);
-        sentido = -sentido;
-
+        // o movimento não reage mais ao tiro (fica tudo no proximoPasso)
         // se não tem alvo, revida em quem atirou
         if (alvo == null && inimigos.containsKey(e.getName())) {
             alvo = e.getName();
@@ -262,6 +264,117 @@ public class JuizoFinal extends AdvancedRobot
         setAhead(dist);
     }
     
+
+    // *** vaiPraOnde *** //
+    // decide o próximo vai/volta do vai-e-vem
+    public void vaiPraOnde() {
+        Inimigo perto = maisProximo();
+
+        // não viu ninguém: vai-e-vem
+        if (perto == null) {
+            setAhead(100 * sentido);
+            sentido = -sentido;
+            return;
+        }
+
+        // muitos inimigos (começo): cantinho
+        if (getOthers() > LIMITE_MELEE) {
+            escolherCanto();
+            double dCanto = Point2D.distance(getX(), getY(), canto.x, canto.y);
+            // longe do canto: vai até ele
+            if (dCanto > 80) {
+                irPara(Math.atan2(canto.x - getX(), canto.y - getY()), Math.min(dCanto, 180));
+                return;
+            }
+            // no canto: vai-e-vem curto
+            double anguloCentro = Math.atan2(getBattleFieldWidth() / 2 - canto.x, getBattleFieldHeight() / 2 - canto.y);
+            irPara(anguloCentro + sentido * Math.PI / 2, 50 + Math.random() * 20);
+            sentido = -sentido;
+            return;
+        }
+
+        // poucos inimigos: vai-e-vem de lado em relação ao inimigo mais próximo,
+        // inclinado para chegar (ou voltar) à distância ideal
+        double anguloInimigo = Math.atan2(perto.x - getX(), perto.y - getY());
+        double dist = Point2D.distance(getX(), getY(), perto.x, perto.y);
+        double ideal = distanciaIdeal();
+        // erro > 0: longe demais (inclina para perto); erro < 0: perto demais (inclina para longe)
+        double erro = Math.max(-1, Math.min(1, (dist - ideal) / ideal));
+        double correcao = erro * 0.6; // no máximo ~35°
+        // tamanho variado para o vai-e-vem não ficar previsível
+        double comprimento = 100 + Math.random() * 80;
+        irPara(anguloInimigo + sentido * (Math.PI / 2 - correcao), comprimento);
+        sentido = -sentido;
+    }
+
+    // *** distanciaIdeal *** //
+    // quanto menos inimigos vivos, mais perto
+    double distanciaIdeal() {
+        double fracao = (getOthers() - 1) / (double) (LIMITE_MELEE - 1);
+        fracao = Math.max(0, Math.min(1, fracao));
+        return DIST_PERTO + (DIST_LONGE - DIST_PERTO) * fracao;
+    }
+
+    // *** maisProximo *** //
+    // inimigo recente mais perto de mim (é dele que o robô mantém distância)
+    Inimigo maisProximo() {
+        Inimigo melhor = null;
+        double menor = Double.MAX_VALUE;
+        for (Inimigo i : inimigos.values()) {
+            if (!recente(i)) continue;
+            double d = Point2D.distance(getX(), getY(), i.x, i.y);
+            if (d < menor) {
+                menor = d;
+                melhor = i;
+            }
+        }
+        return melhor;
+    }
+
+    // *** escolherCanto *** //
+    // escolhe o canto com menos perigo; só troca se o novo for bem melhor (tipo escolherAlvo)
+    void escolherCanto() {
+        double w = getBattleFieldWidth(), h = getBattleFieldHeight();
+        double[][] cantos = { {RECUO_CANTO, RECUO_CANTO}, {w - RECUO_CANTO, RECUO_CANTO},
+                              {RECUO_CANTO, h - RECUO_CANTO}, {w - RECUO_CANTO, h - RECUO_CANTO} };
+        Point2D.Double melhor = null;
+        double menor = Double.MAX_VALUE;
+        for (double[] c : cantos) {
+            double p = perigoCanto(c[0], c[1]);
+            if (p < menor) {
+                menor = p;
+                melhor = new Point2D.Double(c[0], c[1]);
+            }
+        }
+        if (canto == null || menor < perigoCanto(canto.x, canto.y) * 0.7) {
+            canto = melhor;
+        }
+    }
+
+    // perigo de um canto: inimigos perto dele pesam muito (1/d²),
+    // e canto longe de mim pesa mais (teria que atravessar a matança do meio)
+    double perigoCanto(double x, double y) {
+        double perigo = 0;
+        for (Inimigo i : inimigos.values()) {
+            if (!recente(i)) continue;
+            double d = Point2D.distance(x, y, i.x, i.y);
+            perigo += 1 / Math.max(d * d, 1);
+        }
+        return perigo * (1 + Point2D.distance(getX(), getY(), x, y) / 400);
+    }
+
+    // *** irPara *** //
+    // vira para um ângulo e anda 'dist'; se for mais rápido, vai de ré (igual ao fugirProMeio)
+    void irPara(double angulo, double dist) {
+        double giro = Utils.normalRelativeAngle(angulo - getHeadingRadians());
+        if (Math.abs(giro) > Math.PI / 2) {
+            giro = Utils.normalRelativeAngle(giro + Math.PI);
+            dist = -dist;
+        }
+        setTurnRightRadians(giro);
+        setAhead(dist);
+    }
+
     // *** onHitWall *** //
     public void onHitWall(HitWallEvent e) {
     // quando bater na parede, chama o método fugirProMeio
