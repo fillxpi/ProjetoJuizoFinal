@@ -199,7 +199,7 @@ public class JuizoFinal extends AdvancedRobot
     }
 
 
-    // *** mirar e atirar (estilo Tron: escolhe o ângulo que tem mais chance de acertar ALGUÉM) *** //
+    // *** mirar e atirar (escolhe o ângulo que tem mais chance de acertar ALGUÉM) *** //
     public void mirarEAtirar() {
         if (alvo == null) return;
         Inimigo a = inimigos.get(alvo);
