@@ -1,4 +1,4 @@
-package ProjetoJuizoFinal;
+package CopiadoNosso;
 import robocode.AdvancedRobot;
 import robocode.*;
 import robocode.util.Utils;
@@ -8,13 +8,25 @@ import java.util.HashMap;
 import java.util.Map;
 
 
-public class JuizoFinal extends AdvancedRobot
+public class CopiaDoNosso extends AdvancedRobot
 {
+    // USAR_ANTIGRAVIDADE=false, PARAR_NA_ESQUIVA=true,
+    // COMP_MIN=50, COMP_VAR=50, DIST_PERTO=180
+    // true = movimento anti-gravidade a cada tick; false = vai e vem antigo
+    static final boolean USAR_ANTIGRAVIDADE = true;
+    // (vai e vem antigo) true = esquiva faz setAhead(0)
+    static final boolean PARAR_NA_ESQUIVA = false;
+    // (vai e vem antigo) false = desliga o cantinho no melee
+    static final boolean USAR_CANTO = true;
+    // (vai e vem antigo) comprimento do passo = COMP_MIN + random * COMP_VAR
+    static final double COMP_MIN = 100;
+    static final double COMP_VAR = 80;
+
     // guarda os dados de cada inimigo já escaneado (chave = nome do inimigo)
     Map<String, Inimigo> inimigos = new HashMap<String, Inimigo>();
     // nome do inimigo escolhido como alvo (null = nenhum)
     String alvo = null;
-	int sentido = 1;
+    int sentido = 1;
 
     // canto escolhido para o começo da partida
     Point2D.Double canto = null;
@@ -23,45 +35,136 @@ public class JuizoFinal extends AdvancedRobot
     // distância do ponto do canto até as paredes
     static final double RECUO_CANTO = 170;
     // distância ideal do inimigo mais próximo (no 1x1 ele fica perto, no melee ele fica longe)
-    static final double DIST_PERTO = 180;
+    static final double DIST_PERTO = 250;
     static final double DIST_LONGE = 400;
 
-    
+    // *** parâmetros do movimento anti-gravidade *** //
+    static final double PESO_INIMIGO = 40000;   // repulsão = PESO / d²
+    static final double PESO_PAREDE = 20000;    // repulsão da parede = PESO / d²
+    static final double PESO_TANGENCIAL = 1.0;  // força que faz o robô circular o inimigo
+    static final double PESO_RADIAL = 1.0;      // força que ajusta a distância ideal
+    static final double MARGEM_PAREDE = 40;     // margem do "wall smoothing"
+    static final double OLHAR_PAREDE = 140;     // quanto olha à frente pra não bater
+    static final long INTERVALO_ESQUIVA = 8;    // ticks mínimos entre duas esquivas
+    long ultimaEsquiva = -100;
+    long proximaTroca = 0;                      // troca de lado aleatória (imprevisível)
+
     // *** run *** //
     public void run() {
-    // aqui to só definindo as cores do robô
-    setGunColor(new Color(240, 208, 221));
-    setBodyColor(new Color(240, 208, 221));
-    setRadarColor(new Color(240, 208, 221));
-	
+        // aqui to só definindo as cores do robô
+        setGunColor(new Color(240, 208, 221));
+        setBodyColor(new Color(240, 208, 221));
+        setRadarColor(new Color(240, 208, 221));
+
         // corpo, canhão e radar giram de forma independente
         setAdjustGunForRobotTurn(true);
         setAdjustRadarForGunTurn(true);
         setAdjustRadarForRobotTurn(true);
- 
+
         while(true) {
             controlarRadar();
 
-            // olha 80 px à frente no sentido que tá andando;
-            // se for bater na parede, vai pro meio
-            double olhar = 80 * Math.signum(getDistanceRemaining());
-            if (olhar != 0 && getTurnRemaining() == 0 && pertoDaParede(olhar)) {
-                fugirProMeio(150);
+            if (USAR_ANTIGRAVIDADE) {
+                // movimento contínuo, recalculado a cada tick
+                mover();
+            } else {
+                // olha 80 px à frente no sentido que tá andando;
+                // se for bater na parede, vai pro meio
+                double olhar = 80 * Math.signum(getDistanceRemaining());
+                if (olhar != 0 && getTurnRemaining() == 0 && pertoDaParede(olhar)) {
+                    fugirProMeio(150);
+                }
+                // movimento de vai e vem
+                else if (getDistanceRemaining() == 0) {
+                    vaiPraOnde();
+                }
             }
-            // movimento de vai e vem
-            else if (getDistanceRemaining() == 0) {
-                vaiPraOnde();
-            }
-            
+
             // a cada tick, o canhão acompanha o alvo
             mirarEAtirar();
             execute();
         }
-	 }
+    }
+
+
+    // *** mover (anti-gravidade) *** //
+    // soma forças: inimigos e paredes empurram o robô; uma força lateral faz ele
+    // circular o inimigo mais próximo; outra ajusta a distância ideal.
+    public void mover() {
+        double w = getBattleFieldWidth(), h = getBattleFieldHeight();
+        double fx = 0, fy = 0;
+        Inimigo perto = maisProximo();
+        boolean duelo = getOthers() <= LIMITE_MELEE;
+
+        // troca de lado de vez em quando (tempo aleatório) pra não ficar previsível
+        if (getTime() >= proximaTroca) {
+            sentido = -sentido;
+            proximaTroca = getTime() + 15 + (long) (Math.random() * 35);
+        }
+
+        // 1) repulsão dos inimigos (1/d²)
+        for (Inimigo i : inimigos.values()) {
+            if (!recente(i)) continue;
+            // no fim da partida, a distância do mais próximo é controlada pelo termo radial
+            if (duelo && i == perto) continue;
+            double dx = getX() - i.x, dy = getY() - i.y;
+            double d2 = Math.max(dx * dx + dy * dy, 1);
+            double d = Math.sqrt(d2);
+            double forca = PESO_INIMIGO / d2;
+            fx += dx / d * forca;
+            fy += dy / d * forca;
+        }
+
+        // 2) repulsão das paredes (empurra pra dentro da arena)
+        fx += PESO_PAREDE / Math.max(getX() * getX(), 1);
+        fx -= PESO_PAREDE / Math.max((w - getX()) * (w - getX()), 1);
+        fy += PESO_PAREDE / Math.max(getY() * getY(), 1);
+        fy -= PESO_PAREDE / Math.max((h - getY()) * (h - getY()), 1);
+
+        // 3) força lateral: circula o inimigo mais próximo (ou o centro, se não vê ninguém)
+        double refX = (perto == null) ? w / 2 : perto.x;
+        double refY = (perto == null) ? h / 2 : perto.y;
+        double anguloRef = Math.atan2(refX - getX(), refY - getY());
+        double tangente = anguloRef + sentido * Math.PI / 2;
+        fx += Math.sin(tangente) * PESO_TANGENCIAL;
+        fy += Math.cos(tangente) * PESO_TANGENCIAL;
+
+        // 4) força radial: aproxima se tá longe demais, afasta se tá perto demais
+        if (perto != null) {
+            double dist = Point2D.distance(getX(), getY(), perto.x, perto.y);
+            double ideal = distanciaIdeal();
+            double erro = Math.max(-1, Math.min(1, (dist - ideal) / ideal));
+            fx += Math.sin(anguloRef) * erro * PESO_RADIAL;
+            fy += Math.cos(anguloRef) * erro * PESO_RADIAL;
+        }
+
+        // direção resultante, ajustada pra não bater na parede
+        double angulo = Math.atan2(fx, fy);
+        angulo = suavizarParede(angulo);
+        irPara(angulo, 120);
+    }
+
+    // *** suavizarParede *** //
+    // se o ponto à frente cair perto da parede, gira o caminho em direção ao centro
+    double suavizarParede(double angulo) {
+        double w = getBattleFieldWidth(), h = getBattleFieldHeight();
+        double centro = Math.atan2(w / 2 - getX(), h / 2 - getY());
+        double passo = (Utils.normalRelativeAngle(centro - angulo) >= 0) ? 0.1 : -0.1;
+        for (int k = 0; k < 40; k++) {
+            double x = getX() + Math.sin(angulo) * OLHAR_PAREDE;
+            double y = getY() + Math.cos(angulo) * OLHAR_PAREDE;
+            if (x > MARGEM_PAREDE && x < w - MARGEM_PAREDE
+                    && y > MARGEM_PAREDE && y < h - MARGEM_PAREDE) {
+                break;
+            }
+            angulo += passo;
+        }
+        return angulo;
+    }
 
 
     // *** mirar e atirar *** //
-	public void mirarEAtirar() {
+    public void mirarEAtirar() {
         if (alvo == null) return;
         Inimigo i = inimigos.get(alvo);
         if (i == null || !recente(i)) return;
@@ -140,7 +243,6 @@ public class JuizoFinal extends AdvancedRobot
         setTurnRadarRightRadians(giro + (giro >= 0 ? 0.35 : -0.35));
     }
 
-
     // *** scanned robot *** //
     public void onScannedRobot(ScannedRobotEvent e) {
         // guarda/atualiza os dados desse inimigo
@@ -150,17 +252,24 @@ public class JuizoFinal extends AdvancedRobot
             i.nome = e.getName();
             i.rumo = e.getHeadingRadians();
             i.visto = getTime();
-	    i.energia = e.getEnergy();
+            i.energia = e.getEnergy();
             inimigos.put(e.getName(), i);
         }
-	// esquiva reativa de tiro
-	// se a energia do robô inimigo caiu entre 0.1 e 3.0, significa q ele acabou de atirar
-	double quedaEnergia = i.energia - e.getEnergy();
-	if (quedaEnergia > 0.09 && quedaEnergia <= 3.0){
-	// inverte o sentido imediatamente, e cancela o trajeto antigo
-	sentido = -sentido;
-	setAhead(0); // para o movimento atual, e recalcula no proximo tick
-	}
+        // esquiva reativa de tiro
+        // se a energia do robô inimigo caiu entre 0.1 e 3.0, significa q ele acabou de atirar
+        double quedaEnergia = i.energia - e.getEnergy();
+        // na anti-gravidade, limita a frequência (com 9 inimigos atirando, inverter
+        // a cada scan viraria ruído)
+        boolean podeEsquivar = !USAR_ANTIGRAVIDADE || getTime() - ultimaEsquiva > INTERVALO_ESQUIVA;
+        if (quedaEnergia > 0.09 && quedaEnergia <= 3.0 && podeEsquivar) {
+            // inverte o sentido imediatamente
+            sentido = -sentido;
+            ultimaEsquiva = getTime();
+            // só no vai e vem antigo: cancela o trajeto atual
+            if (!USAR_ANTIGRAVIDADE && PARAR_NA_ESQUIVA) {
+                setAhead(0);
+            }
+        }
 
         double anguloAbsoluto = getHeadingRadians() + e.getBearingRadians();
         // quanto o inimigo girou por tick desde o último scan (para a mira circular)
@@ -180,16 +289,14 @@ public class JuizoFinal extends AdvancedRobot
 
         // reavalia quem é o alvo com os dados mais recentes
         escolherAlvo();
-
-       
     }
 
 
     static class Inimigo {
-    String nome;
-    double x, y, energia, velocidade,rumo;
-    double taxaGiro; // quanto o rumo do inimigo muda por tick (radianos)
-    long visto; // ultima vez q foi escaneado
+        String nome;
+        double x, y, energia, velocidade, rumo;
+        double taxaGiro; // quanto o rumo do inimigo muda por tick (radianos)
+        long visto; // ultima vez q foi escaneado
     }
     // considera "recente" o inimigo visto nos últimos 40 ticks
     boolean recente(Inimigo i) {
@@ -223,7 +330,7 @@ public class JuizoFinal extends AdvancedRobot
         }
         alvo = melhor.nome;
     }
-    
+
 
     // *** onRobotDeath *** //
     // remove o inimigo morto da lista
@@ -233,7 +340,7 @@ public class JuizoFinal extends AdvancedRobot
             alvo = null;
         }
     }
-    
+
 
     // *** onHitByBullet *** //
     public void onHitByBullet(HitByBulletEvent e) {
@@ -253,7 +360,7 @@ public class JuizoFinal extends AdvancedRobot
         }
     }
 
-    // distância mínima que o robô tenta manter das paredes
+    // distância mínima que o robô tenta manter das paredes (vai e vem antigo)
     static final double MARGEM = 60;
 
     // *** pertoDaParede *** //
@@ -281,10 +388,10 @@ public class JuizoFinal extends AdvancedRobot
         setTurnRightRadians(giro);
         setAhead(dist);
     }
-    
+
 
     // *** vaiPraOnde *** //
-    // decide o próximo vai/volta do vai-e-vem
+    // decide o próximo vai/volta do vai-e-vem (movimento antigo)
     public void vaiPraOnde() {
         Inimigo perto = maisProximo();
 
@@ -296,7 +403,7 @@ public class JuizoFinal extends AdvancedRobot
         }
 
         // muitos inimigos (começo): cantinho
-        if (getOthers() > LIMITE_MELEE) {
+        if (USAR_CANTO && getOthers() > LIMITE_MELEE) {
             escolherCanto();
             double dCanto = Point2D.distance(getX(), getY(), canto.x, canto.y);
             // longe do canto: vai até ele
@@ -320,7 +427,7 @@ public class JuizoFinal extends AdvancedRobot
         double erro = Math.max(-1, Math.min(1, (dist - ideal) / ideal));
         double correcao = erro * 0.6; // no máximo ~35°
         // tamanho variado para o vai-e-vem não ficar previsível
-	double comprimento = 50 + Math.random() * 50;
+        double comprimento = COMP_MIN + Math.random() * COMP_VAR;
         irPara(anguloInimigo + sentido * (Math.PI / 2 - correcao), comprimento);
         sentido = -sentido;
     }
@@ -395,7 +502,10 @@ public class JuizoFinal extends AdvancedRobot
 
     // *** onHitWall *** //
     public void onHitWall(HitWallEvent e) {
-    // quando bater na parede, chama o método fugirProMeio
-    fugirProMeio(150);
-    }    
+        // no movimento antigo, bateu na parede: foge pro meio.
+        // na anti-gravidade o mover() já recalcula a rota no próximo tick
+        if (!USAR_ANTIGRAVIDADE) {
+            fugirProMeio(150);
+        }
+    }
 }
