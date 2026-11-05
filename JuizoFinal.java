@@ -32,6 +32,13 @@ public class JuizoFinal extends AdvancedRobot
     long ultimaEsquiva = -100;
     long proximaTroca = 0;                      // troca de lado aleatória (imprevisível)
 
+    // *** parâmetros da fuga de colisão *** //
+    static final long DURACAO_FUGA = 14;        // ticks andando pra longe depois de bater em alguém
+    static final int LIMITE_PARADO = 6;         // ticks quase parado = considera que travou
+    long fugaAte = -1;                          // até que tick o modo fuga fica ativo
+    double anguloFuga = 0;                      // direção da fuga (radianos)
+    int ticksParado = 0;                        // quantos ticks seguidos o robô está quase parado
+
 
     // *** run *** //
     public void run() {
@@ -64,6 +71,28 @@ public class JuizoFinal extends AdvancedRobot
         double fx = 0, fy = 0;
         Inimigo perto = maisProximo();
         boolean duelo = getOthers() <= LIMITE_MELEE;
+
+        // 0) fuga de colisão: enquanto estiver ativa, ignora a anti-gravidade e só se afasta
+        if (getTime() < fugaAte) {
+            irPara(suavizarParede(anguloFuga), 150);
+            return;
+        }
+
+        // detector de travamento: se o robô ficou quase parado por vários ticks seguidos,
+        // força uma fuga (pra longe do inimigo mais próximo, ou pro centro se não vê ninguém)
+        if (Math.abs(getVelocity()) < 0.5) ticksParado++;
+        else ticksParado = 0;
+        if (ticksParado > LIMITE_PARADO) {
+            ticksParado = 0;
+            if (perto != null) {
+                anguloFuga = Math.atan2(getX() - perto.x, getY() - perto.y) + sentido * Math.PI / 6;
+            } else {
+                anguloFuga = Math.atan2(w / 2 - getX(), h / 2 - getY());
+            }
+            fugaAte = getTime() + DURACAO_FUGA;
+            irPara(suavizarParede(anguloFuga), 150);
+            return;
+        }
 
         // troca de lado de vez em quando (tempo aleatório) pra não ficar previsível
         if (getTime() >= proximaTroca) {
@@ -352,6 +381,22 @@ public class JuizoFinal extends AdvancedRobot
         if (alvo == null && inimigos.containsKey(e.getName())) {
             alvo = e.getName();
         }
+    }
+
+    // *** onHitRobot *** //
+    // entra em modo fuga: por alguns ticks, anda direto pra longe do robô que bateu,
+    // com um leve desvio lateral pra não ficar alinhado com ele
+    public void onHitRobot(HitRobotEvent e) {
+        // a colisão tira 0.6 de energia do outro robô; atualiza aqui pra que o
+        // onScannedRobot não confunda essa queda com um tiro (e fique invertendo o sentido)
+        Inimigo i = inimigos.get(e.getName());
+        if (i != null) {
+            i.energia = e.getEnergy();
+        }
+        double anguloInimigo = getHeadingRadians() + e.getBearingRadians();
+        anguloFuga = anguloInimigo + Math.PI + sentido * Math.PI / 6;
+        fugaAte = getTime() + DURACAO_FUGA;
+        ticksParado = 0;
     }
 
     // *** onBulletHit *** //
