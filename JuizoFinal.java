@@ -150,8 +150,18 @@ public class JuizoFinal extends AdvancedRobot
             i.nome = e.getName();
             i.rumo = e.getHeadingRadians();
             i.visto = getTime();
+	    i.energia = e.getEnergy();
             inimigos.put(e.getName(), i);
         }
+	// esquiva reativa de tiro
+	// se a energia do robô inimigo caiu entre 0.1 e 3.0, significa q ele acabou de atirar
+	double quedaEnergia = i.energia - e.getEnergy();
+	if (quedaEnergia > 0.09 && quedaEnergia <= 3.0){
+	// inverte o sentido imediatamente, e cancela o trajeto antigo
+	sentido = -sentido;
+	setAhead(0); // para o movimento atual, e recalcula no proximo tick
+	}
+
         double anguloAbsoluto = getHeadingRadians() + e.getBearingRadians();
         // quanto o inimigo girou por tick desde o último scan (para a mira circular)
         long dt = getTime() - i.visto;
@@ -234,6 +244,14 @@ public class JuizoFinal extends AdvancedRobot
         }
     }
 
+    // *** onBulletHit *** //
+    // acionado quando o NOSSO tiro acerta um inimigo
+    public void onBulletHit(BulletHitEvent e) {
+        Inimigo i = inimigos.get(e.getName());
+        if (i != null) {
+            i.energia = e.getEnergy(); // atualiza a energia para o robô não achar que o inimigo atirou
+        }
+    }
 
     // distância mínima que o robô tenta manter das paredes
     static final double MARGEM = 60;
@@ -302,7 +320,7 @@ public class JuizoFinal extends AdvancedRobot
         double erro = Math.max(-1, Math.min(1, (dist - ideal) / ideal));
         double correcao = erro * 0.6; // no máximo ~35°
         // tamanho variado para o vai-e-vem não ficar previsível
-        double comprimento = 100 + Math.random() * 80;
+	double comprimento = 50 + Math.random() * 50;
         irPara(anguloInimigo + sentido * (Math.PI / 2 - correcao), comprimento);
         sentido = -sentido;
     }
