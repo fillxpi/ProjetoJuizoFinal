@@ -96,6 +96,10 @@ public class JuizoFinal extends AdvancedRobot
             return;
         }
 
+        // com mais de LIMITE_MELEE inimigos vivos, usa o Minimum Risk Movement
+        // (no fim da partida volta pra anti-gravidade + esquiva, que é melhor no duelo)
+        if (!duelo) { moverMRM(); return; }
+
         // troca de lado de vez em quando (tempo aleatório) pra não ficar previsível
         if (getTime() >= proximaTroca) {
             sentido = -sentido;
@@ -142,6 +146,57 @@ public class JuizoFinal extends AdvancedRobot
         double angulo = Math.atan2(fx, fy);
         angulo = suavizarParede(angulo);
         irPara(angulo, 120);
+    }
+
+
+    // *** Minimum Risk Movement *** //
+    // sorteia pontos ao redor e vai pro ponto de menor "risco"
+    Point2D.Double destino = null, ultimaPos = null;
+    boolean repensar = false;
+    static final double MARGEM_MRM = 35;
+
+    void moverMRM() {
+        double w = getBattleFieldWidth(), h = getBattleFieldHeight();
+        Point2D.Double eu = new Point2D.Double(getX(), getY());
+        if (destino == null) { destino = eu; ultimaPos = eu; }
+        Inimigo perto = maisProximo();
+        double dPerto = (perto == null) ? 400 : eu.distance(perto.x, perto.y);
+        boolean perto15 = eu.distance(destino) < 15;
+        int n = (perto15 || repensar) ? 60 : 8;
+        double riscoAtual = (perto15 || repensar) ? Double.MAX_VALUE : risco(destino, eu) * 0.85;
+        for (int k = 0; k < n; k++) {
+            double raio = Math.min(dPerto * 0.8, 100 + 120 * Math.random());
+            double ang = 2 * Math.PI * Math.random();
+            double x = getX() + Math.sin(ang) * raio, y = getY() + Math.cos(ang) * raio;
+            if (x < MARGEM_MRM || y < MARGEM_MRM || x > w - MARGEM_MRM || y > h - MARGEM_MRM) continue;
+            Point2D.Double p = new Point2D.Double(x, y);
+            double r = risco(p, eu);
+            if (r < riscoAtual) { riscoAtual = r; destino = p; }
+        }
+        if (perto15 || repensar) ultimaPos = eu;
+        repensar = false;
+        double ang = Math.atan2(destino.x - getX(), destino.y - getY());
+        irPara(ang, eu.distance(destino));
+    }
+
+    double risco(Point2D.Double p, Point2D.Double eu) {
+        double r = 0.08 / Math.max(p.distanceSq(ultimaPos), 1);
+        double ida = Math.atan2(p.x - eu.x, p.y - eu.y);
+        for (Inimigo i : inimigos.values()) {
+            if (!recente(i)) continue;
+            double forca = Math.min(i.energia / Math.max(getEnergy(), 1), 2);
+            double angInimigo = Math.atan2(i.x - p.x, i.y - p.y);
+            double perp = 1 + Math.abs(Math.cos(ida - angInimigo));
+            // se sou o robô mais perto dele, provavelmente ele mira em mim
+            int maisPerto = 0;
+            double dEu = p.distanceSq(i.x, i.y);
+            for (Inimigo j : inimigos.values()) {
+                if (j != i && recente(j) && Point2D.distanceSq(j.x, j.y, i.x, i.y) < dEu * 0.9) maisPerto++;
+            }
+            double mira = (maisPerto == 0) ? 2.0 : 1.0;
+            r += forca * perp * mira / Math.max(dEu, 1);
+        }
+        return r;
     }
 
     // *** suavizarParede *** //
@@ -380,6 +435,7 @@ public class JuizoFinal extends AdvancedRobot
                 && getTime() - ultimaEsquiva > INTERVALO_ESQUIVA) {
             sentido = -sentido;
             ultimaEsquiva = getTime();
+            repensar = true;
         }
 
         double anguloAbsoluto = getHeadingRadians() + e.getBearingRadians();
