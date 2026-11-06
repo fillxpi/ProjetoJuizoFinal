@@ -273,7 +273,8 @@ public class JuizoFinal extends AdvancedRobot
     }
 
     // *** Play It Forward *** //
-    // histórico de movimento de cada inimigo (velocidade e giro por tick); static = guarda entre rounds
+    // histórico de movimento de cada inimigo (velocidade e giro por tick); 
+    // static = guarda entre rounds
     static final int TAM_LOG = 6000;
     static final int PADRAO = 7;     // quantos ticks recentes comparamos
     static class Historico { double[] v = new double[TAM_LOG]; double[] g = new double[TAM_LOG]; int n = 0; }
