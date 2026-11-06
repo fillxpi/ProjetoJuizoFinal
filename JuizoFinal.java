@@ -267,6 +267,19 @@ public class JuizoFinal extends AdvancedRobot
         if (potencia < 0.1) return;
         double velocidadeBala = 20 - 3 * potencia;
 
+        boolean gf = usaGF(a.nome);
+        if (getGunHeat() == 0) registrarVirtual(a, velocidadeBala);
+        if (gf) {
+            double ang = anguloGF(a, velocidadeBala);
+            double tolGF = Math.atan(18 / Math.max(distAlvo, 1));
+            setTurnGunRightRadians(Utils.normalRelativeAngle(ang - getGunHeadingRadians()));
+            if (getGunHeat() == 0 && atrasoAlvo <= 10 && distAlvo < 700
+                    && Math.abs(getGunTurnRemainingRadians()) < tolGF) {
+                setFire(potencia);
+            }
+            return;
+        }
+
         // uma "solução de tiro" por inimigo: ângulo, tolerância, peso
         List<double[]> sol = new ArrayList<double[]>();
         for (Inimigo i : inimigos.values()) {
@@ -386,6 +399,99 @@ public class JuizoFinal extends AdvancedRobot
         return new double[] { px, py };
     }
 
+
+    // *** GuessFactor *** //
+    static final boolean GF_TODOS = true; // ondas GF pra todos (a estatística aprende sempre)
+    static final int BINS = 31, MEIO = 15;
+    // estatística por inimigo: [segmento distância][segmento vel. lateral][bin]
+    static Map<String, double[][][]> estat = new HashMap<String, double[][][]>();
+    List<Onda> ondas = new ArrayList<Onda>();
+    static class Onda { String nome; double x, y, angDireto, velBala; int direcao, sd, sv; long tempo; }
+
+    boolean usarGF() { return GF_TODOS || getOthers() == 1; }
+
+    double[] segmento(Inimigo i, int sd, int sv) {
+        double[][][] e = estat.get(i.nome);
+        if (e == null) { e = new double[5][5][BINS]; estat.put(i.nome, e); }
+        return e[sd][sv];
+    }
+    int segDist(double d) { return Math.min(4, (int) (d / 150)); }
+    int segVel(double lat) { return Math.min(4, (int) (Math.abs(lat) / 2)); }
+
+    double anguloGF(Inimigo a, double velBala) {
+        double direto = Math.atan2(a.x - getX(), a.y - getY());
+        double d = Point2D.distance(getX(), getY(), a.x, a.y);
+        double[] b = segmento(a, segDist(d), segVel(a.latVel));
+        int melhor = MEIO;
+        for (int k = 0; k < BINS; k++) if (b[k] > b[melhor]) melhor = k;
+        double fator = (melhor - MEIO) / (double) MEIO;
+        return direto + a.direcao * fator * Math.asin(8 / velBala);
+    }
+
+    // chamado a cada scan: confere as ondas desse inimigo e solta uma nova
+    void atualizarOndas(Inimigo i) {
+        for (int k = ondas.size() - 1; k >= 0; k--) {
+            Onda o = ondas.get(k);
+            if (!o.nome.equals(i.nome)) continue;
+            double percorrido = (getTime() - o.tempo) * o.velBala;
+            if (percorrido < Point2D.distance(o.x, o.y, i.x, i.y)) continue;
+            double ang = Math.atan2(i.x - o.x, i.y - o.y);
+            double fator = Utils.normalRelativeAngle(ang - o.angDireto) / Math.asin(8 / o.velBala) * o.direcao;
+            int idx = (int) Math.round(Math.max(-1, Math.min(1, fator)) * MEIO) + MEIO;
+            double[] b = segmento(i, o.sd, o.sv);
+            for (int j = 0; j < BINS; j++) b[j] += 1.0 / (1 + (j - idx) * (j - idx));
+            ondas.remove(k);
+        }
+        if (!usarGF()) return;
+        double d = Point2D.distance(getX(), getY(), i.x, i.y);
+        double pot = Math.max(0.1, Math.min(3, potenciaPara(i, d)));
+        Onda o = new Onda();
+        o.nome = i.nome; o.x = getX(); o.y = getY(); o.tempo = getTime();
+        o.angDireto = Math.atan2(i.x - getX(), i.y - getY());
+        o.velBala = 20 - 3 * pot; o.direcao = i.direcao;
+        o.sd = segDist(d); o.sv = segVel(i.latVel);
+        ondas.add(o);
+    }
+
+
+    // *** Virtual guns *** //
+    // a cada tiro, simula onde as duas miras (PIF e GF) teriam atirado; quando a "bala virtual"
+    // chega no inimigo, vê qual acertaria. static = a pontuação de cada mira dura entre rounds.
+    static Map<String, double[]> acertos = new HashMap<String, double[]>(); // [PIF, GF]
+    List<double[]> virtuais = new ArrayList<double[]>();
+    List<String> donosVirtuais = new ArrayList<String>();
+
+    boolean usaGF(String nome) {
+        double[] a = acertos.get(nome);
+        return a != null && a[1] > a[0];
+    }
+
+    void registrarVirtual(Inimigo a, double velBala) {
+        double[] p = prever(a, velBala);
+        double angPIF = Math.atan2(p[0] - getX(), p[1] - getY());
+        double angGF = anguloGF(a, velBala);
+        virtuais.add(new double[] { getX(), getY(), getTime(), velBala, angPIF, angGF });
+        donosVirtuais.add(a.nome);
+    }
+
+    void conferirVirtuais(Inimigo i) {
+        for (int k = virtuais.size() - 1; k >= 0; k--) {
+            if (!donosVirtuais.get(k).equals(i.nome)) continue;
+            double[] v = virtuais.get(k);
+            double d = Point2D.distance(v[0], v[1], i.x, i.y);
+            if ((getTime() - v[2]) * v[3] < d) continue;
+            double ang = Math.atan2(i.x - v[0], i.y - v[1]);
+            double tol = Math.atan(18 / Math.max(d, 1));
+            double[] a = acertos.get(i.nome);
+            if (a == null) { a = new double[2]; acertos.put(i.nome, a); }
+            for (int g = 0; g < 2; g++) {
+                double acertou = Math.abs(Utils.normalRelativeAngle(ang - v[4 + g])) < tol ? 1 : 0;
+                a[g] = a[g] * 0.99 + acertou; // média "móvel": tiros antigos pesam menos
+            }
+            virtuais.remove(k); donosVirtuais.remove(k);
+        }
+    }
+
     // mantém a posição prevista dentro da arena
     double limitar(double v, double max) {
         return Math.max(18, Math.min(max - 18, v));
@@ -462,6 +568,10 @@ public class JuizoFinal extends AdvancedRobot
         i.velocidade = e.getVelocity();
         i.rumo = e.getHeadingRadians();
         i.visto = getTime();
+        i.latVel = e.getVelocity() * Math.sin(e.getHeadingRadians() - anguloAbsoluto);
+        if (i.latVel > 0.1) i.direcao = 1; else if (i.latVel < -0.1) i.direcao = -1;
+        atualizarOndas(i);
+        conferirVirtuais(i);
 
         // reavalia quem é o alvo com os dados mais recentes
         escolherAlvo();
@@ -472,6 +582,7 @@ public class JuizoFinal extends AdvancedRobot
         String nome;
         double x, y, energia, velocidade, rumo;
         double taxaGiro; // quanto o rumo do inimigo muda por tick (radianos)
+        double latVel; int direcao = 1; // velocidade lateral e sentido (para a GuessFactor)
         long visto; // ultima vez q foi escaneado
     }
 
