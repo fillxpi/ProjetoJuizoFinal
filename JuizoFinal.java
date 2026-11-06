@@ -5,6 +5,8 @@ import java.awt.Color;
 import java.awt.geom.Point2D;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 
 
 public class JuizoFinal extends AdvancedRobot
@@ -197,13 +199,63 @@ public class JuizoFinal extends AdvancedRobot
     }
 
 
-    // *** mirar e atirar *** //
+    // *** mirar e atirar (escolhe o ângulo que tem mais chance de acertar ALGUÉM) *** //
     public void mirarEAtirar() {
         if (alvo == null) return;
-        Inimigo i = inimigos.get(alvo);
-        if (i == null || !recente(i)) return;
+        Inimigo a = inimigos.get(alvo);
+        if (a == null || !recente(a)) return;
+        long atrasoAlvo = getTime() - a.visto;
 
-        // onde o inimigo está AGORA (andou, e talvez girou, desde o último scan)
+        // potência definida pelo alvo principal (mesma regra de antes)
+        double distAlvo = Point2D.distance(getX(), getY(), a.x, a.y);
+        double potencia = potenciaPara(a, distAlvo);
+        if (potencia < 0.1) return;
+        double velocidadeBala = 20 - 3 * potencia;
+
+        // uma "solução de tiro" por inimigo: ângulo, tolerância, peso
+        List<double[]> sol = new ArrayList<double[]>();
+        for (Inimigo i : inimigos.values()) {
+            if (getTime() - i.visto > 10) continue;
+            double[] p = prever(i, velocidadeBala);
+            double d = Point2D.distance(getX(), getY(), p[0], p[1]);
+            double ang = Math.atan2(p[0] - getX(), p[1] - getY());
+            double tol = Math.atan(18 / Math.max(d, 1));
+            double peso = 1.0 / Math.max(d, 50);   // inimigo perto vale mais
+            if (i == a) peso *= 1.5;               // leve preferência pelo alvo escolhido
+            sol.add(new double[] { ang, tol, peso, d });
+        }
+        if (sol.isEmpty()) return;
+
+        // testa cada ângulo candidato: soma o peso de todos os inimigos que ele acertaria
+        double melhorAng = sol.get(0)[0], melhorTol = sol.get(0)[1], melhorScore = -1;
+        for (double[] c : sol) {
+            double score = 0;
+            for (double[] s : sol) {
+                if (Math.abs(Utils.normalRelativeAngle(c[0] - s[0])) <= s[1]) score += s[2];
+            }
+            if (score > melhorScore) { melhorScore = score; melhorAng = c[0]; melhorTol = c[1]; }
+        }
+
+        setTurnGunRightRadians(Utils.normalRelativeAngle(melhorAng - getGunHeadingRadians()));
+        if (getGunHeat() == 0 && atrasoAlvo <= 10 && distAlvo < 700
+                && Math.abs(getGunTurnRemainingRadians()) < melhorTol) {
+            setFire(potencia);
+        }
+    }
+
+    double potenciaPara(Inimigo i, double distancia) {
+        double potencia;
+        if      (distancia < 150) potencia = 3.0;
+        else if (distancia < 400) potencia = 2.0;
+        else                      potencia = 1.2;
+        double necessaria = (i.energia <= 4) ? i.energia / 4 : (i.energia + 2) / 6;
+        potencia = Math.min(potencia, Math.max(necessaria, 0.1));
+        if (getEnergy() < 20) potencia = Math.min(potencia, 1.0);
+        return Math.min(potencia, getEnergy() - 0.1);
+    }
+
+    // previsão circular: onde o inimigo estará quando a bala chegar
+    double[] preverCircular(Inimigo i, double velocidadeBala) {
         long atraso = getTime() - i.visto;
         double px = i.x, py = i.y, rumo = i.rumo;
         for (long k = 0; k < atraso; k++) {
@@ -211,43 +263,72 @@ public class JuizoFinal extends AdvancedRobot
             px = limitar(px + Math.sin(rumo) * i.velocidade, getBattleFieldWidth());
             py = limitar(py + Math.cos(rumo) * i.velocidade, getBattleFieldHeight());
         }
-
-        // potência conforme a distância
-        double distancia = Point2D.distance(getX(), getY(), px, py);
-        double potencia;
-        if      (distancia < 150) potencia = 3.0;
-        else if (distancia < 400) potencia = 2.0;
-        else                      potencia = 1.2;
-        // não gasta mais energia do que o necessário para matar o alvo
-        // (dano = 4 x potência, mais 2 x (potência - 1) quando a potência passa de 1)
-        double necessaria = (i.energia <= 4) ? i.energia / 4 : (i.energia + 2) / 6;
-        potencia = Math.min(potencia, Math.max(necessaria, 0.1));
-        // com pouca energia, só tiros fracos
-        if (getEnergy() < 20) potencia = Math.min(potencia, 1.0);
-        // nunca gasta a energia toda
-        potencia = Math.min(potencia, getEnergy() - 0.1);
-        if (potencia < 0.1) return;
-
-        double velocidadeBala = 20 - 3 * potencia;
-
-        // simula o inimigo andando (e girando) até a bala chegar (mira circular)
         for (int t = 1; t < 200; t++) {
             if (t * velocidadeBala >= Point2D.distance(getX(), getY(), px, py)) break;
             rumo += i.taxaGiro;
             px = limitar(px + Math.sin(rumo) * i.velocidade, getBattleFieldWidth());
             py = limitar(py + Math.cos(rumo) * i.velocidade, getBattleFieldHeight());
         }
+        return new double[] { px, py };
+    }
 
-        // gira o canhão até o ponto previsto
-        double anguloTiro = Math.atan2(px - getX(), py - getY());
-        setTurnGunRightRadians(Utils.normalRelativeAngle(anguloTiro - getGunHeadingRadians()));
+    // *** Play It Forward *** //
+    // histórico de movimento de cada inimigo (velocidade e giro por tick); 
+    // static = guarda entre rounds
+    static final int TAM_LOG = 6000;
+    static final int PADRAO = 7;     // quantos ticks recentes comparamos
+    static class Historico { double[] v = new double[TAM_LOG]; double[] g = new double[TAM_LOG]; int n = 0; }
+    static Map<String, Historico> historicos = new HashMap<String, Historico>();
 
-        // atira quando o canhão está frio, alinhado, com dados recentes e o alvo não está longe demais
-        double tolerancia = Math.atan(18 / Math.max(distancia, 1));
-        if (getGunHeat() == 0 && atraso <= 10 && distancia < 700
-                && Math.abs(getGunTurnRemainingRadians()) < tolerancia) {
-            setFire(potencia);
+    void registrar(String nome, double v, double g) {
+        Historico h = historicos.get(nome);
+        if (h == null) { h = new Historico(); historicos.put(nome, h); }
+        if (h.n >= TAM_LOG) { // descarta a metade mais antiga
+            int meio = TAM_LOG / 2;
+            System.arraycopy(h.v, meio, h.v, 0, TAM_LOG - meio);
+            System.arraycopy(h.g, meio, h.g, 0, TAM_LOG - meio);
+            h.n -= meio;
         }
+        h.v[h.n] = v; h.g[h.n] = g; h.n++;
+    }
+
+    double[] prever(Inimigo i, double velocidadeBala) {
+        double[] circ = preverCircular(i, velocidadeBala);
+        Historico h = historicos.get(i.nome);
+        if (h == null || h.n < 200 || getGunHeat() > 0.4) return circ; // só gasta CPU perto do tiro
+        double dist = Point2D.distance(getX(), getY(), i.x, i.y);
+        int ticksFuturo = (int) (dist / velocidadeBala) + 2 + (int) (getTime() - i.visto);
+        int fim = h.n - 1;
+        for (int m = 0; m < PADRAO; m++) if (Double.isNaN(h.v[fim - m])) return circ;
+
+        // acha o trecho do passado mais parecido com os últimos PADRAO ticks
+        int melhor = -1; double menor = Double.MAX_VALUE;
+        int inicio = Math.max(PADRAO, h.n - 3000);
+        for (int k = inicio; k < h.n - ticksFuturo - 1; k++) {
+            double custo = 0;
+            for (int m = 0; m < PADRAO && custo < menor; m++) {
+                double dv = h.v[k - m] - h.v[fim - m], dg = (h.g[k - m] - h.g[fim - m]) * 40;
+                custo += dv * dv + dg * dg;
+            }
+            if (Double.isNaN(custo) || custo >= menor) continue;
+            menor = custo; melhor = k;
+        }
+        if (melhor < 0) return circ;
+
+        // reproduz o que ele fez depois daquele trecho, a partir da posição atual
+        double w = getBattleFieldWidth(), hh = getBattleFieldHeight();
+        double px = i.x, py = i.y, rumo = i.rumo;
+        long atraso = getTime() - i.visto;
+        for (int t = 1; t < 200; t++) {
+            int k = melhor + t;
+            if (k >= h.n || Double.isNaN(h.v[k])) return circ;
+            rumo += h.g[k];
+            px += Math.sin(rumo) * h.v[k];
+            py += Math.cos(rumo) * h.v[k];
+            if (px < 18 || py < 18 || px > w - 18 || py > hh - 18) return circ; // atravessou parede: não confia
+            if (t > atraso && (t - atraso) * velocidadeBala >= Point2D.distance(getX(), getY(), px, py)) break;
+        }
+        return new double[] { px, py };
     }
 
     // mantém a posição prevista dentro da arena
@@ -264,7 +345,7 @@ public class JuizoFinal extends AdvancedRobot
         // com mais de 1 inimigo, a cada 24 ticks gira por 9 ticks para ver todos
         boolean varreduraCompleta = (getOthers() > 1) && (getTime() % 24 < 9);
         // com mais de 3 inimigos vivos, o radar só gira (vê todo mundo a cada 8 ticks)
-        boolean muitosInimigos = getOthers() > 3;
+        boolean muitosInimigos = getOthers() >= 2;
 
         // sem alvo, alvo sem aparecer há muito tempo, hora da varredura ou muitos inimigos: gira sem parar
         if (a == null || getTime() - a.visto > 12 || varreduraCompleta || muitosInimigos) {
@@ -309,6 +390,15 @@ public class JuizoFinal extends AdvancedRobot
             i.taxaGiro = Math.max(-0.18, Math.min(0.18, giro)); // limite do jogo: ~10 graus por tick
         } else if (dt > 8) {
             i.taxaGiro = 0;
+        }
+        // grava o movimento no histórico do PIF (preenche os ticks entre um scan e outro)
+        if (dt == 0 || dt > 20) {
+            registrar(e.getName(), Double.NaN, Double.NaN); // quebra: não dá pra emendar
+        } else {
+            for (long k = 1; k <= dt; k++) {
+                double v = i.velocidade + (e.getVelocity() - i.velocidade) * k / dt;
+                registrar(e.getName(), v, i.taxaGiro);
+            }
         }
         i.x = getX() + Math.sin(anguloAbsoluto) * e.getDistance();
         i.y = getY() + Math.cos(anguloAbsoluto) * e.getDistance();
